@@ -1,0 +1,260 @@
+---
+title: "Spotify: Can We Predict How Popular a Song Will Be Using ML?"
+
+
+author: "Venkat Somala"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+## Objective
+
+What makes a song popular? Can we predict a song’s popularity base only on its acoustic properties (eg: how fast it is, how loud it is, etc)? To answer these questions, we’ll analyze a sample of 10,000 songs that play on Spotify:
+
+These data are a mere sample of the more than 100,000 Spotify songs posted on Kaggle.
+
+Along with the popularity of each song, the music data set contains lots of acoustic variables. To learn more about the acoustic variables, check out the Spotify API page.
+
+```{r warning=FALSE, message=FALSE}
+library(ggplot2)  # for plots
+library(GGally)   # for pairs plots
+library(ggridges) # for joy plots
+library(dplyr)    # for wrangling
+library(caret)    # for machine learning algorithms
+```
+
+
+```{r}
+music <- read.csv("https://www.macalester.edu/~ajohns24/data/spotify_18.csv")
+
+```
+
+## 1: Preparing & getting to know the data
+
+Seeing the 6 most and the 6 least popular songs in the dataset
+```{r}
+
+music %>%
+  arrange(desc(popularity)) %>% 
+  head(6)
+
+
+music %>%
+  arrange(popularity) %>% 
+  head(6)
+
+```
+
+### 1B
+
+Joy Division is one of the only, if not the only, band to have a data visualization tool named after them. The “Joy plot” technique is inspired by the band’s album cover. 
+
+In honor of their album cover, I construct a joy plot for the popularity of a handful of artists who are among those with the most songs in the data set.
+
+```{r}
+# Filter out the artists of interest
+classical <- music %>% 
+  filter(artist_name %in% c("Johann Sebastian Bach", "Wolfgang Amadeus Mozart", "Waka Flocka Flame", "Eagles"))
+ggplot(classical, aes(x = popularity, y = artist_name)) +
+  geom_density_ridges() + 
+  theme_ridges()
+```
+
+
+### 1C
+
+Here we create a new data set music_sub with the following features:
+
+It re-defines time_signature_4 and mode as factor variables.
+It removes 3 variables which should not be used in our predictive model of popularity.
+
+```{r}
+music$time_signature_4 = as.factor(music$time_signature_4)
+music$mode = as.factor(music$mode)
+
+music_sub <-music %>% select(acousticness, danceability, duration_ms, energy, instrumentalness, liveness, loudness, mode, speechiness, tempo, valence, popularity, time_signature_4) %>%
+  droplevels()
+
+```
+
+
+## Exercise 2: Build a Predictive Model
+
+Our goal in this section is to build a predictive model of song popularity using the available set of predictors in music_sub. To this end, we’ll perform least squares, backward stepwise selection, and LASSO.
+
+
+#### Least squares regressions
+Here we construct a least squares regression model of popularity by all predictors in music_sub.
+
+```{r}
+# Set the seed 
+    set.seed(253)
+    
+    # Run the least squares regression model
+    ls_model <- train(
+      popularity ~ .,
+      data = music_sub,
+      method = "lm",
+      trControl = trainControl(method = "cv", number = 10),
+      na.action = na.omit
+    )
+
+    # Summarize the model
+    summary(ls_model)
+    
+    # Calculate the CV MAE (2 approaches)
+    ls_model$resample %>% 
+      summarize(mean(MAE))
+
+```
+
+The average MAE is 12.76 which means our model's predictions are off by an average of 12.76 in predicting popularity. 
+
+#### Backward stepwise selection
+
+
+```{r}
+set.seed(253)
+
+ backstep_model <- train(
+      popularity ~ .,
+      data = music_sub,
+      method = "leapBackward",
+      tuneGrid = data.frame(nvmax = 1:13),
+      trControl = trainControl(method = "cv", number = 10, selectionFunction = "best"),
+      metric = "MAE",
+      na.action = na.omit
+    )
+ 
+ summary(backstep_model)
+
+```
+
+
+The predictor in the 1 predictor model is loudness. Looking at the summary of our model, we see that loudness is included in every model indicating that it is the best predictor of popularity. 
+
+
+```{r}
+plot(backstep_model)
+```
+
+Looking at the plot, I see that the MAE decreases significantly with an additional predictor added to model up until the model has 5 predictors. After that, the MAE is relatively the same. 
+
+
+
+```{r}
+   backstep_model$bestTune$nvmax
+    
+   coef(backstep_model$finalModel, id = backstep_model$bestTune$nvmax)
+```
+
+
+```{r}
+
+backstep_model$results
+```
+
+The 10 fold CV MAE for the "best" model is 12.75957.
+
+#### LASSO
+
+
+```{r}
+lambda_grid <- 10^seq(-3, 0.5, length = 100)
+
+lasso_model <- train(
+    popularity ~ .,
+    data = music_sub,
+    method = "glmnet",
+    tuneGrid = data.frame(alpha = 1, lambda = lambda_grid),
+    trControl = trainControl(method = "cv", number = 10, selectionFunction = "oneSE"),
+    metric = "MAE",
+    na.action = na.omit
+)
+
+```
+
+```{r}
+    plot(lasso_model$finalModel, xvar = "lambda", label = TRUE, col = rainbow(15))
+    coef(lasso_model$finalModel, 1)
+    coef(lasso_model$finalModel, 0.2)
+
+
+
+
+```
+
+If Lamba equals 1, then there are 3 variables in the model: danceability, instrumentalness, and loudness. 
+
+One of the most persistent variables is loudness.
+
+One of the least persistent variables is tempo.
+
+##### A
+
+```{r}
+    plot(lasso_model)
+    plot(lasso_model, xlim = c(0,0.6), ylim = c(12.75,12.8))
+    lasso_model$bestTune
+
+```
+
+##### B
+
+```{r}
+coef(lasso_model$finalModel, 0.5094)
+
+```
+
+The remaining variables and coefficients are:
+
+danceability: 7.2176
+intrumentalness: -2.34637
+liveness: -1.04934
+loudness: 0.39566
+speechiness: -0.39980
+valence: -1.31258
+
+##### C
+
+```{r}
+lasso_model$resample %>% 
+  summarize(mean(MAE))
+```
+
+
+#### Exercise 5: Reflection & a final mode
+
+
+Lasso Model MAE: 12.82
+Backstep Model MAE: 12.75
+Least Squares Regression Model: 12.76
+
+Basedon the average MAE's, I'd say that the backstep model is the best since it has the lowest MAE and is relatively simple at 5 variables. 
+
+
+```{r}
+lasso_model$results %>% 
+  filter(lambda == lasso_model$bestTune$lambda)
+```
+
+```{r}
+     result_df <- data.frame(resid = resid(lasso_model), fitted = fitted(lasso_model))
+
+      ggplot(result_df, aes(x = fitted, y = resid)) + 
+        geom_point() + 
+        geom_hline(yintercept = 0)
+```
+
+Is it right? Based on the residual plot, the LASSO model doesn't seem to be right. The residuals aren't random and have clear patterns.
+
+Is the model strong? The R squared is weak at 0.07 so I would say the model is weak.
+
+Does the model produce accurate predictions? The MAE is 12.85 which is relatively large compared to the popularity levels we are predicting so the model does not produce accurate predictions.
+
+### Conclusion 
+
+Although our model isn't great, I would recommend music execs to increase danceability as that is relatively significant and has a high coefficient suggesting it has a sizeable impact on popularity. 
+
